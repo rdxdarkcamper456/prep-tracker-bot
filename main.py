@@ -3,8 +3,7 @@ import os
 import re
 import asyncio
 from datetime import date, timedelta, datetime
-from threading import Thread
-from flask import Flask
+from aiohttp import web
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -14,16 +13,9 @@ from telegram.ext import (
     filters
 )
 
-# --- FLASK SERVER FOR RENDER ---
-app_flask = Flask(__name__)
-
-@app_flask.route('/')
-def home():
-    return "Prep Tracker Bot is Active!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app_flask.run(host='0.0.0.0', port=port)
+# --- WEB SERVER FOR RENDER PORT BINDING ---
+async def handle_ping(request):
+    return web.Response(text="Bot is online and running!")
 
 # --- BOT CONFIG ---
 BOT_TOKEN = "8929714993:AAHc0ve1genzBeboUZGQs2WtskX8uL_BEj0"
@@ -253,27 +245,39 @@ async def subject_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-def main():
-    # 1. Start Flask web server in a background thread
-    Thread(target=run_flask, daemon=True).start()
-
-    # 2. Build & Run Telegram Bot Application
-    app = Application.builder().token(BOT_TOKEN).build()
+async def main():
+    # Setup Telegram Application
+    bot_app = Application.builder().token(BOT_TOKEN).build()
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("me", my_stats))
-    app.add_handler(CommandHandler("history", history))
-    app.add_handler(CommandHandler("leaderboard", leaderboard))
-    app.add_handler(CommandHandler("goal", set_goal))
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("me", my_stats))
+    bot_app.add_handler(CommandHandler("history", history))
+    bot_app.add_handler(CommandHandler("leaderboard", leaderboard))
+    bot_app.add_handler(CommandHandler("goal", set_goal))
     
-    app.add_handler(CommandHandler("physics", subject_history))
-    app.add_handler(CommandHandler("chemistry", subject_history))
-    app.add_handler(CommandHandler("biology", subject_history))
+    bot_app.add_handler(CommandHandler("physics", subject_history))
+    bot_app.add_handler(CommandHandler("chemistry", subject_history))
+    bot_app.add_handler(CommandHandler("biology", subject_history))
 
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_natural_text))
+    bot_app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_natural_text))
 
-    print("Bot polling started...")
-    app.run_polling()
+    # Setup Web App for Render Port
+    web_app = web.Application()
+    web_app.router.add_get('/', handle_ping)
+    
+    port = int(os.environ.get("PORT", 10000))
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+
+    # Start Bot Polling in non-blocking mode
+    await bot_app.initialize()
+    await bot_app.start()
+    await bot_app.updater.start_polling()
+
+    # Keep running forever
+    await asyncio.Event().wait()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
