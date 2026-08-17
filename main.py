@@ -3,6 +3,7 @@ import os
 import re
 import asyncio
 from datetime import date, timedelta, datetime
+from threading import Thread
 from flask import Flask
 from telegram import Update
 from telegram.ext import (
@@ -20,6 +21,10 @@ app_flask = Flask(__name__)
 def home():
     return "Prep Tracker Bot is Active!"
 
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app_flask.run(host='0.0.0.0', port=port)
+
 # --- BOT CONFIG ---
 BOT_TOKEN = "8929714993:AAHc0ve1genzBeboUZGQs2WtskX8uL_BEj0"
 
@@ -27,7 +32,6 @@ BOT_TOKEN = "8929714993:AAHc0ve1genzBeboUZGQs2WtskX8uL_BEj0"
 conn = sqlite3.connect('tracker.db', check_same_thread=False)
 cursor = conn.cursor()
 
-# Tables setup
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS prep_logs (
         user_id INTEGER,
@@ -74,7 +78,6 @@ def get_user_streak(user_id):
 async def handle_natural_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
-    # Regex to find Physics, Chemistry, Biology scores
     phy_match = re.search(r'physics\s*[:=\-]?\s*(\d+)', text, re.IGNORECASE)
     chem_match = re.search(r'chemistry\s*[:=\-]?\s*(\d+)', text, re.IGNORECASE)
     bio_match = re.search(r'biology\s*[:=\-]?\s*(\d+)', text, re.IGNORECASE)
@@ -88,19 +91,16 @@ async def handle_natural_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         bio = int(bio_match.group(1)) if bio_match else 0
         total = phy + chem + bio
 
-        # Save to DB
         cursor.execute('''
             INSERT INTO prep_logs (user_id, name, entry_date, physics, chemistry, biology)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (user.id, user.first_name, today, phy, chem, bio))
         conn.commit()
 
-        # Goal check
         cursor.execute('SELECT daily_goal FROM user_goals WHERE user_id = ?', (user.id,))
         goal_row = cursor.fetchone()
         goal = goal_row[0] if goal_row else 100
         
-        # Calculate progress bar
         percentage = min(int((total / goal) * 100), 100)
         filled_blocks = int(percentage / 10)
         bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
@@ -140,7 +140,6 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     today = str(date.today())
     
-    # Today stats
     cursor.execute('''
         SELECT SUM(physics), SUM(chemistry), SUM(biology)
         FROM prep_logs WHERE user_id = ? AND entry_date = ?
@@ -152,7 +151,6 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bio_t = today_data[2] or 0
     today_total = phy_t + chem_t + bio_t
 
-    # Total overall stats
     cursor.execute('''
         SELECT SUM(physics + chemistry + biology)
         FROM prep_logs WHERE user_id = ?
@@ -195,7 +193,6 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Weekly leaderboard (last 7 days)
     seven_days_ago = str(date.today() - timedelta(days=7))
     cursor.execute('''
         SELECT name, SUM(physics + chemistry + biology) as total
@@ -256,7 +253,11 @@ async def subject_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-async def run_bot():
+def main():
+    # 1. Start Flask web server in a background thread
+    Thread(target=run_flask, daemon=True).start()
+
+    # 2. Build & Run Telegram Bot Application
     app = Application.builder().token(BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -269,15 +270,10 @@ async def run_bot():
     app.add_handler(CommandHandler("chemistry", subject_history))
     app.add_handler(CommandHandler("biology", subject_history))
 
-    # Handles simple message format: Physics 20 Chemistry 30 Biology 25
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_natural_text))
-    
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
+
+    print("Bot polling started...")
+    app.run_polling()
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8080))
-    loop = asyncio.get_event_loop()
-    loop.create_task(run_bot())
-    app_flask.run(host='0.0.0.0', port=port)
+    main()
