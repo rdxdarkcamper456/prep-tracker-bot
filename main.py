@@ -1,9 +1,9 @@
-import sqlite3
 import os
 import re
 import asyncio
 from datetime import date, timedelta, datetime
 from aiohttp import web
+import psycopg2
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -13,47 +13,61 @@ from telegram.ext import (
     filters
 )
 
-# --- WEB SERVER FOR RENDER PORT BINDING ---
-async def handle_ping(request):
-    return web.Response(text="Bot is online and running!")
-
-# --- BOT CONFIG ---
+# --- BOT & DB CONFIG ---
 BOT_TOKEN = "8929714993:AAHc0ve1genzBeboUZGQs2WtskX8uL_BEj0"
+# Yahan Supabase se copy kiya hua URI paste karein:
+SUPABASE_DB_URI = "postgresql://postgres:@MyPrepTracker_bot2@db.xxxx.supabase.co:5432/postgres"
 
-# --- DATABASE SETUP ---
-conn = sqlite3.connect('tracker.db', check_same_thread=False)
-cursor = conn.cursor()
+# --- DATABASE SETUP (SUPABASE) ---
+def get_db_connection():
+    return psycopg2.connect(SUPABASE_DB_URI)
 
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS prep_logs (
-        user_id INTEGER,
-        name TEXT,
-        entry_date TEXT,
-        physics INTEGER,
-        chemistry INTEGER,
-        biology INTEGER
-    )
-''')
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS prep_logs (
+            user_id BIGINT,
+            name TEXT,
+            entry_date DATE,
+            physics INT,
+            chemistry INT,
+            biology INT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_goals (
+            user_id BIGINT PRIMARY KEY,
+            daily_goal INT DEFAULT 100
+        )
+    ''')
+    conn.commit()
+    cursor.close()
+    conn.close()
 
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS user_goals (
-        user_id INTEGER PRIMARY KEY,
-        daily_goal INTEGER DEFAULT 100
-    )
-''')
-conn.commit()
+# Initialize tables
+init_db()
+
+# --- WEB SERVER FOR RENDER ---
+async def handle_ping(request):
+    return web.Response(text="Bot is online with Supabase DB!")
 
 # --- HELPER FUNCTIONS ---
 def get_user_streak(user_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     cursor.execute('''
         SELECT DISTINCT entry_date FROM prep_logs 
-        WHERE user_id = ? ORDER BY entry_date DESC
+        WHERE user_id = %s ORDER BY entry_date DESC
     ''', (user_id,))
-    dates = [datetime.strptime(row[0], "%Y-%m-%d").date() for row in cursor.fetchall()]
-    
-    if not dates:
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if not rows:
         return 0
         
+    dates = [row[0] for row in rows]
     today = date.today()
     if dates[0] != today and dates[0] != today - timedelta(days=1):
         return 0
@@ -76,28 +90,32 @@ async def handle_natural_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if phy_match or chem_match or bio_match:
         user = update.effective_user
-        today = str(date.today())
+        today = date.today()
         
         phy = int(phy_match.group(1)) if phy_match else 0
         chem = int(chem_match.group(1)) if chem_match else 0
         bio = int(bio_match.group(1)) if bio_match else 0
         total = phy + chem + bio
 
+        conn = get_db_connection()
+        cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO prep_logs (user_id, name, entry_date, physics, chemistry, biology)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
         ''', (user.id, user.first_name, today, phy, chem, bio))
-        conn.commit()
-
-        cursor.execute('SELECT daily_goal FROM user_goals WHERE user_id = ?', (user.id,))
-        goal_row = cursor.fetchone()
-        goal = goal_row[0] if goal_row else 100
         
+        cursor.execute('SELECT daily_goal FROM user_goals WHERE user_id = %s', (user.id,))
+        goal_row = cursor.fetchone()
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        goal = goal_row[0] if goal_row else 100
         percentage = min(int((total / goal) * 100), 100)
         filled_blocks = int(percentage / 10)
         bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
 
-        formatted_date = date.today().strftime("%d %b")
+        formatted_date = today.strftime("%d %b")
         reply_msg = (
             f"✅ **Recorded for {user.first_name}!**\n\n"
             f"📅 **Date:** {formatted_date}\n"
@@ -114,27 +132,25 @@ async def handle_natural_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "👋 **Prep Tracker Bot Started!**\n\n"
-        "**Features & Commands:**\n"
-        "• Just send text like:\n"
-        "  `Physics 20`\n"
-        "  `Chemistry 30`\n"
-        "  `Biology 25`\n\n"
-        "• `/me` — View your detailed stats & streak\n"
-        "• `/history` — View past practice logs\n"
-        "• `/leaderboard` — View group ranking\n"
-        "• `/goal 100` — Set your daily target\n"
-        "• `/physics`, `/chemistry`, `/biology` — Subject history"
+        "👋 **Prep Tracker Bot Started! (Cloud Powered ☁️)**\n\n"
+        "**Commands:**\n"
+        "• Send text: `Physics 20 Chemistry 30 Biology 25`\n"
+        "• `/me` — View stats & streak\n"
+        "• `/history` — View past logs\n"
+        "• `/leaderboard` — View ranking\n"
+        "• `/goal 100` — Set target"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    today = str(date.today())
+    today = date.today()
     
+    conn = get_db_connection()
+    cursor = conn.cursor()
     cursor.execute('''
         SELECT SUM(physics), SUM(chemistry), SUM(biology)
-        FROM prep_logs WHERE user_id = ? AND entry_date = ?
+        FROM prep_logs WHERE user_id = %s AND entry_date = %s
     ''', (user.id, today))
     today_data = cursor.fetchone()
     
@@ -145,9 +161,11 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cursor.execute('''
         SELECT SUM(physics + chemistry + biology)
-        FROM prep_logs WHERE user_id = ?
+        FROM prep_logs WHERE user_id = %s
     ''', (user.id,))
     total_all = cursor.fetchone()[0] or 0
+    cursor.close()
+    conn.close()
 
     streak = get_user_streak(user.id)
 
@@ -164,12 +182,16 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    conn = get_db_connection()
+    cursor = conn.cursor()
     cursor.execute('''
         SELECT entry_date, SUM(physics), SUM(chemistry), SUM(biology)
-        FROM prep_logs WHERE user_id = ?
+        FROM prep_logs WHERE user_id = %s
         GROUP BY entry_date ORDER BY entry_date DESC LIMIT 7
     ''', (user.id,))
     rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
 
     if not rows:
         await update.message.reply_text("❌ Aapka koi history record nahi mila.")
@@ -177,7 +199,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = f"📜 **Your Practice History (Last 7 Days)**\n\n"
     for r in rows:
-        dt = datetime.strptime(r[0], "%Y-%m-%d").strftime("%d %b")
+        dt = r[0].strftime("%d %b")
         p, c, b = r[1] or 0, r[2] or 0, r[3] or 0
         tot = p + c + b
         msg += f"🗓 **{dt}** → P:{p} C:{c} B:{b} → **{tot} Q**\n"
@@ -185,15 +207,19 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    seven_days_ago = str(date.today() - timedelta(days=7))
+    seven_days_ago = date.today() - timedelta(days=7)
+    conn = get_db_connection()
+    cursor = conn.cursor()
     cursor.execute('''
         SELECT name, SUM(physics + chemistry + biology) as total
         FROM prep_logs
-        WHERE entry_date >= ?
-        GROUP BY user_id
+        WHERE entry_date >= %s
+        GROUP BY user_id, name
         ORDER BY total DESC LIMIT 10
     ''', (seven_days_ago,))
     rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
 
     if not rows:
         await update.message.reply_text("🏆 Abhi tak leaderboard me koi entries nahi hain.")
@@ -214,39 +240,23 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("⚠️ Direct target numeric me set karein. Example: `/goal 100`")
+        await update.message.reply_text("⚠️ Target number me set karein: `/goal 100`")
         return
 
     target = int(context.args[0])
+    conn = get_db_connection()
+    cursor = conn.cursor()
     cursor.execute('''
-        INSERT OR REPLACE INTO user_goals (user_id, daily_goal) VALUES (?, ?)
+        INSERT INTO user_goals (user_id, daily_goal) VALUES (%s, %s)
+        ON CONFLICT (user_id) DO UPDATE SET daily_goal = EXCLUDED.daily_goal
     ''', (user.id, target))
     conn.commit()
+    cursor.close()
+    conn.close()
 
     await update.message.reply_text(f"🎯 Target set to **{target} questions/day**!")
 
-async def subject_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    cmd = update.message.text.replace('/', '').lower()
-    
-    col_map = {'physics': 'physics', 'chemistry': 'chemistry', 'biology': 'biology'}
-    col = col_map.get(cmd, 'physics')
-    
-    cursor.execute(f'''
-        SELECT entry_date, SUM({col}) FROM prep_logs 
-        WHERE user_id = ? GROUP BY entry_date ORDER BY entry_date DESC LIMIT 7
-    ''', (user.id,))
-    rows = cursor.fetchall()
-
-    msg = f"📊 **Subject History: {col.capitalize()}**\n\n"
-    for r in rows:
-        dt = datetime.strptime(r[0], "%Y-%m-%d").strftime("%d %b")
-        msg += f"🗓 {dt} → **{r[1]} Q**\n"
-        
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
 async def main():
-    # Setup Telegram Application
     bot_app = Application.builder().token(BOT_TOKEN).build()
     
     bot_app.add_handler(CommandHandler("start", start))
@@ -254,14 +264,9 @@ async def main():
     bot_app.add_handler(CommandHandler("history", history))
     bot_app.add_handler(CommandHandler("leaderboard", leaderboard))
     bot_app.add_handler(CommandHandler("goal", set_goal))
-    
-    bot_app.add_handler(CommandHandler("physics", subject_history))
-    bot_app.add_handler(CommandHandler("chemistry", subject_history))
-    bot_app.add_handler(CommandHandler("biology", subject_history))
 
     bot_app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_natural_text))
 
-    # Setup Web App for Render Port
     web_app = web.Application()
     web_app.router.add_get('/', handle_ping)
     
@@ -271,12 +276,10 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-    # Start Bot Polling in non-blocking mode
     await bot_app.initialize()
     await bot_app.start()
     await bot_app.updater.start_polling()
 
-    # Keep running forever
     await asyncio.Event().wait()
 
 if __name__ == '__main__':
