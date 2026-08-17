@@ -16,7 +16,7 @@ from telegram.ext import (
 # --- BOT & DB CONFIG ---
 BOT_TOKEN = "8929714993:AAHc0ve1genzBeboUZGQs2WtskX8uL_BEj0"
 # Yahan Supabase se copy kiya hua URI paste karein:
-SUPABASE_DB_URI = "postgresql://postgres:@MyPrepTracker_bot2@db.xxxx.supabase.co:5432/postgres"
+SUPABASE_DB_URI = SUPABASE_DB_URI = "postgresql://postgres.kpmrmrrxucjzhhnfzsnf:@MyPrepTracker_bot2@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
 # --- DATABASE SETUP (SUPABASE) ---
 def get_db_connection():
