@@ -1,23 +1,19 @@
 import sqlite3
 import os
+import asyncio
 from datetime import date
-from threading import Thread
 from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# --- FLASK WEB SERVER (Render Port Binding ke liye) ---
+# --- FLASK SERVER ---
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
 def home():
-    return "Bot is running live!"
+    return "Bot is active!"
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app_flask.run(host='0.0.0.0', port=port)
-
-# --- BOT TOKEN ---
+# --- BOT CONFIG ---
 BOT_TOKEN = "8929714993:AAHc0ve1genzBeboUZGQs2WtskX8uL_BEj0"
 
 # --- DATABASE SETUP ---
@@ -35,7 +31,7 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# --- BOT COMMANDS ---
+# --- COMMANDS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 **Welcome to Prep Tracker Bot!**\n\n"
@@ -104,18 +100,22 @@ async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-def main():
-    # Flask server ko background thread me chalayein
-    Thread(target=run_flask).start()
-
-    # Telegram Bot Start
+async def run_bot():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add", add_entry))
     app.add_handler(CommandHandler("myhistory", view_history))
-
-    print("Bot chalu ho gaya hai...")
-    app.run_polling()
+    
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
 
 if __name__ == '__main__':
-    main()
+    port = int(os.environ.get("PORT", 8080))
+    
+    # Background event loop for Telegram Bot
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_bot())
+    
+    # Run Web Server on main thread
+    app_flask.run(host='0.0.0.0', port=port)
