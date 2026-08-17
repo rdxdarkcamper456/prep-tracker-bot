@@ -1,10 +1,23 @@
 import sqlite3
+import os
 from datetime import date
+from threading import Thread
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# --- FLASK WEB SERVER (Render Port Binding ke liye) ---
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "Bot is running live!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app_flask.run(host='0.0.0.0', port=port)
+
 # --- BOT TOKEN ---
-# BotFather se mila token quotes ke andar daalo
 BOT_TOKEN = "8929714993:AAHc0ve1genzBeboUZGQs2WtskX8uL_BEj0"
 
 # --- DATABASE SETUP ---
@@ -22,7 +35,7 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# --- COMMANDS ---
+# --- BOT COMMANDS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 **Welcome to Prep Tracker Bot!**\n\n"
@@ -92,8 +105,11 @@ async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    # Flask server ko background thread me chalayein
+    Thread(target=run_flask).start()
 
+    # Telegram Bot Start
+    app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add", add_entry))
     app.add_handler(CommandHandler("myhistory", view_history))
