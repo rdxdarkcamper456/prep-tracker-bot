@@ -88,7 +88,11 @@ def get_user_streak(user_id):
         print(f"Error getting streak: {e}")
         return 0
 
+# --- TEXT HANDLER FIX ---
 async def handle_natural_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
     text = update.message.text
     
     phy_match = re.search(r'physics\s*[:=\-]?\s*(\d+)', text, re.IGNORECASE)
@@ -137,6 +141,7 @@ async def handle_natural_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(reply_msg, parse_mode="Markdown")
         except Exception as e:
             print(f"Error saving entry: {e}")
+            await update.message.reply_text("⚠️ Data save karne me issue aaya.")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
@@ -224,7 +229,6 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Error fetching history: {e}")
 
-# --- NAYA COMMAND: 30 DAYS / MONTHLY HISTORY ---
 async def monthly_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     try:
@@ -257,7 +261,6 @@ async def monthly_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Error fetching monthly history: {e}")
 
-# --- NAYA COMMAND: ALL TIME SUBJECT SUMMARY ---
 async def all_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     try:
