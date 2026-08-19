@@ -19,7 +19,7 @@ BOT_TOKEN = "8929714993:AAHc0ve1genzBeboUZGQs2WtskX8uL_BEj0"
 # --- SUPABASE CONNECTION STRING ---
 SUPABASE_DB_URI = os.environ.get(
     "SUPABASE_DB_URI", 
-    "postgresql://postgres.kpmrmrrxucjzhhnfzsnf:%40MyPrepTracker_bot2@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
+    "postgresql://postgres.kpmrmrrxucjzhhnfzsnf:%40MyPrepTracker_bot2@aws-0-ap-northeast-1.supabase.com:5432/postgres"
 )
 
 def get_db_connection():
