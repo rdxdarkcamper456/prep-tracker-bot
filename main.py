@@ -13,72 +13,86 @@ from telegram.ext import (
     filters
 )
 
-# --- BOT & DB CONFIG ---
+# --- BOT CONFIG ---
 BOT_TOKEN = "8929714993:AAHc0ve1genzBeboUZGQs2WtskX8uL_BEj0"
-# Yahan Supabase se copy kiya hua URI paste karein:
-SUPABASE_DB_URI = SUPABASE_DB_URI = "postgresql://postgres.kpmrmrrxucjzhhnfzsnf:@MyPrepTracker_bot2@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
-# --- DATABASE SETUP (SUPABASE) ---
+# --- SUPABASE CONNECTION STRING ---
+# (Special characters in password: @ -> %40, # -> %23, $ -> %24)
+SUPABASE_DB_URI = os.environ.get(
+    "SUPABASE_DB_URI", 
+    "postgresql://postgres.kpmrmrrxucjzhhnfzsnf%40MyPrepTracker_bot2@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
+)
+
+# --- DATABASE CONNECTION HELPER ---
 def get_db_connection():
-    return psycopg2.connect(SUPABASE_DB_URI)
+    return psycopg2.connect(SUPABASE_DB_URI, sslmode='require')
 
 def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS prep_logs (
-            user_id BIGINT,
-            name TEXT,
-            entry_date DATE,
-            physics INT,
-            chemistry INT,
-            biology INT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_goals (
-            user_id BIGINT PRIMARY KEY,
-            daily_goal INT DEFAULT 100
-        )
-    ''')
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS prep_logs (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                name TEXT,
+                entry_date DATE,
+                physics INT DEFAULT 0,
+                chemistry INT DEFAULT 0,
+                biology INT DEFAULT 0
+            );
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_goals (
+                user_id BIGINT PRIMARY KEY,
+                daily_goal INT DEFAULT 100
+            );
+        ''')
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("✅ Successfully connected to Supabase Database!")
+    except Exception as e:
+        print(f"❌ Database Initialization Error: {e}")
 
-# Initialize tables
+# Initialize Database
 init_db()
 
-# --- WEB SERVER FOR RENDER ---
+# --- WEB SERVER FOR RENDER PORT BINDING ---
 async def handle_ping(request):
-    return web.Response(text="Bot is online with Supabase DB!")
+    return web.Response(text="Bot is online and connected to Supabase!")
 
-# --- HELPER FUNCTIONS ---
+# --- STREAK HELPER ---
 def get_user_streak(user_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT DISTINCT entry_date FROM prep_logs 
-        WHERE user_id = %s ORDER BY entry_date DESC
-    ''', (user_id,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT DISTINCT entry_date FROM prep_logs 
+            WHERE user_id = %s ORDER BY entry_date DESC
+        ''', (user_id,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
-    if not rows:
+        if not rows:
+            return 0
+            
+        dates = [row[0] for row in rows]
+        today = date.today()
+        if dates[0] != today and dates[0] != today - timedelta(days=1):
+            return 0
+            
+        streak = 1
+        for i in range(len(dates) - 1):
+            if dates[i] - dates[i+1] == timedelta(days=1):
+                streak += 1
+            else:
+                break
+        return streak
+    except Exception as e:
+        print(f"Error getting streak: {e}")
         return 0
-        
-    dates = [row[0] for row in rows]
-    today = date.today()
-    if dates[0] != today and dates[0] != today - timedelta(days=1):
-        return 0
-        
-    streak = 1
-    for i in range(len(dates) - 1):
-        if dates[i] - dates[i+1] == timedelta(days=1):
-            streak += 1
-        else:
-            break
-    return streak
 
 # --- AUTOMATIC TEXT ENTRY HANDLER ---
 async def handle_natural_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -97,36 +111,40 @@ async def handle_natural_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         bio = int(bio_match.group(1)) if bio_match else 0
         total = phy + chem + bio
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO prep_logs (user_id, name, entry_date, physics, chemistry, biology)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        ''', (user.id, user.first_name, today, phy, chem, bio))
-        
-        cursor.execute('SELECT daily_goal FROM user_goals WHERE user_id = %s', (user.id,))
-        goal_row = cursor.fetchone()
-        conn.commit()
-        cursor.close()
-        conn.close()
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO prep_logs (user_id, name, entry_date, physics, chemistry, biology)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            ''', (user.id, user.first_name, today, phy, chem, bio))
+            
+            cursor.execute('SELECT daily_goal FROM user_goals WHERE user_id = %s', (user.id,))
+            goal_row = cursor.fetchone()
+            conn.commit()
+            cursor.close()
+            conn.close()
 
-        goal = goal_row[0] if goal_row else 100
-        percentage = min(int((total / goal) * 100), 100)
-        filled_blocks = int(percentage / 10)
-        bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
+            goal = goal_row[0] if goal_row else 100
+            percentage = min(int((total / goal) * 100), 100)
+            filled_blocks = int(percentage / 10)
+            bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
 
-        formatted_date = today.strftime("%d %b")
-        reply_msg = (
-            f"✅ **Recorded for {user.first_name}!**\n\n"
-            f"📅 **Date:** {formatted_date}\n"
-            f"📚 Physics: {phy}\n"
-            f"🧪 Chemistry: {chem}\n"
-            f"🧬 Biology: {bio}\n"
-            f"📊 **Total:** {total} Qs\n\n"
-            f"🎯 **Today's Goal ({percentage}%):**\n"
-            f"`{bar}` {total}/{goal}"
-        )
-        await update.message.reply_text(reply_msg, parse_mode="Markdown")
+            formatted_date = today.strftime("%d %b")
+            reply_msg = (
+                f"✅ **Recorded for {user.first_name}!**\n\n"
+                f"📅 **Date:** {formatted_date}\n"
+                f"📚 Physics: {phy}\n"
+                f"🧪 Chemistry: {chem}\n"
+                f"🧬 Biology: {bio}\n"
+                f"📊 **Total:** {total} Qs\n\n"
+                f"🎯 **Today's Goal ({percentage}%):**\n"
+                f"`{bar}` {total}/{goal}"
+            )
+            await update.message.reply_text(reply_msg, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Error saving entry: {e}")
+            await update.message.reply_text("⚠️ Data save karne me issue aaya. Connection check karein.")
 
 # --- COMMANDS ---
 
@@ -134,11 +152,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "👋 **Prep Tracker Bot Started! (Cloud Powered ☁️)**\n\n"
         "**Commands:**\n"
-        "• Send text: `Physics 20 Chemistry 30 Biology 25`\n"
-        "• `/me` — View stats & streak\n"
-        "• `/history` — View past logs\n"
-        "• `/leaderboard` — View ranking\n"
-        "• `/goal 100` — Set target"
+        "• Direct text bhejien: `Physics 20 Chemistry 30 Biology 25`\n"
+        "• `/me` — Stats & Streak check karein\n"
+        "• `/history` — Past 7 days history\n"
+        "• `/leaderboard` — Group ranking\n"
+        "• `/goal 100` — Daily target set karein"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -146,96 +164,107 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     today = date.today()
     
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT SUM(physics), SUM(chemistry), SUM(biology)
-        FROM prep_logs WHERE user_id = %s AND entry_date = %s
-    ''', (user.id, today))
-    today_data = cursor.fetchone()
-    
-    phy_t = today_data[0] or 0
-    chem_t = today_data[1] or 0
-    bio_t = today_data[2] or 0
-    today_total = phy_t + chem_t + bio_t
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT SUM(physics), SUM(chemistry), SUM(biology)
+            FROM prep_logs WHERE user_id = %s AND entry_date = %s
+        ''', (user.id, today))
+        today_data = cursor.fetchone()
+        
+        phy_t = today_data[0] or 0 if today_data else 0
+        chem_t = today_data[1] or 0 if today_data else 0
+        bio_t = today_data[2] or 0 if today_data else 0
+        today_total = phy_t + chem_t + bio_t
 
-    cursor.execute('''
-        SELECT SUM(physics + chemistry + biology)
-        FROM prep_logs WHERE user_id = %s
-    ''', (user.id,))
-    total_all = cursor.fetchone()[0] or 0
-    cursor.close()
-    conn.close()
+        cursor.execute('''
+            SELECT SUM(physics + chemistry + biology)
+            FROM prep_logs WHERE user_id = %s
+        ''', (user.id,))
+        total_all_data = cursor.fetchone()
+        total_all = total_all_data[0] or 0 if total_all_data else 0
+        
+        cursor.close()
+        conn.close()
 
-    streak = get_user_streak(user.id)
+        streak = get_user_streak(user.id)
 
-    msg = (
-        f"📊 **{user.first_name}'s Study Stats**\n\n"
-        f"📅 **Today:** {today_total} questions\n"
-        f"📚 Physics: {phy_t}\n"
-        f"🧪 Chemistry: {chem_t}\n"
-        f"🧬 Biology: {bio_t}\n\n"
-        f"🔥 **Current streak:** {streak} days\n"
-        f"📈 **Total questions:** {total_all:,}"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        msg = (
+            f"📊 **{user.first_name}'s Study Stats**\n\n"
+            f"📅 **Today:** {today_total} questions\n"
+            f"📚 Physics: {phy_t}\n"
+            f"🧪 Chemistry: {chem_t}\n"
+            f"🧬 Biology: {bio_t}\n\n"
+            f"🔥 **Current streak:** {streak} days\n"
+            f"📈 **Total questions:** {total_all:,}"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Error fetching stats: {e}")
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT entry_date, SUM(physics), SUM(chemistry), SUM(biology)
-        FROM prep_logs WHERE user_id = %s
-        GROUP BY entry_date ORDER BY entry_date DESC LIMIT 7
-    ''', (user.id,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT entry_date, SUM(physics), SUM(chemistry), SUM(biology)
+            FROM prep_logs WHERE user_id = %s
+            GROUP BY entry_date ORDER BY entry_date DESC LIMIT 7
+        ''', (user.id,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
-    if not rows:
-        await update.message.reply_text("❌ Aapka koi history record nahi mila.")
-        return
+        if not rows:
+            await update.message.reply_text("❌ Aapka koi history record nahi mila.")
+            return
 
-    msg = f"📜 **Your Practice History (Last 7 Days)**\n\n"
-    for r in rows:
-        dt = r[0].strftime("%d %b")
-        p, c, b = r[1] or 0, r[2] or 0, r[3] or 0
-        tot = p + c + b
-        msg += f"🗓 **{dt}** → P:{p} C:{c} B:{b} → **{tot} Q**\n"
+        msg = f"📜 **Your Practice History (Last 7 Days)**\n\n"
+        for r in rows:
+            dt = r[0].strftime("%d %b") if hasattr(r[0], 'strftime') else str(r[0])
+            p, c, b = r[1] or 0, r[2] or 0, r[3] or 0
+            tot = p + c + b
+            msg += f"🗓 **{dt}** → P:{p} C:{c} B:{b} → **{tot} Q**\n"
 
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Error fetching history: {e}")
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     seven_days_ago = date.today() - timedelta(days=7)
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT name, SUM(physics + chemistry + biology) as total
-        FROM prep_logs
-        WHERE entry_date >= %s
-        GROUP BY user_id, name
-        ORDER BY total DESC LIMIT 10
-    ''', (seven_days_ago,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT name, SUM(physics + chemistry + biology) as total
+            FROM prep_logs
+            WHERE entry_date >= %s
+            GROUP BY user_id, name
+            ORDER BY total DESC LIMIT 10
+        ''', (seven_days_ago,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
-    if not rows:
-        await update.message.reply_text("🏆 Abhi tak leaderboard me koi entries nahi hain.")
-        return
+        if not rows:
+            await update.message.reply_text("🏆 Abhi tak leaderboard me koi entries nahi hain.")
+            return
 
-    medals = ["🥇", "🥈", "🥉"]
-    msg = "🏆 **Weekly Leaderboard**\n\n"
-    group_total = 0
+        medals = ["🥇", "🥈", "🥉"]
+        msg = "🏆 **Weekly Leaderboard**\n\n"
+        group_total = 0
 
-    for idx, (name, total) in enumerate(rows):
-        rank = medals[idx] if idx < 3 else f"{idx+1}."
-        msg += f"{rank} **{name}** — {total:,} Q\n"
-        group_total += total
+        for idx, (name, total) in enumerate(rows):
+            rank = medals[idx] if idx < 3 else f"{idx+1}."
+            msg += f"{rank} **{name}** — {total:,} Q\n"
+            group_total += total
 
-    msg += f"\n👥 **Total Group Practice:** {group_total:,} Q"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        msg += f"\n👥 **Total Group Practice:** {group_total:,} Q"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Error fetching leaderboard: {e}")
 
 async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -244,17 +273,20 @@ async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target = int(context.args[0])
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO user_goals (user_id, daily_goal) VALUES (%s, %s)
-        ON CONFLICT (user_id) DO UPDATE SET daily_goal = EXCLUDED.daily_goal
-    ''', (user.id, target))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO user_goals (user_id, daily_goal) VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET daily_goal = EXCLUDED.daily_goal
+        ''', (user.id, target))
+        conn.commit()
+        cursor.close()
+        conn.close()
 
-    await update.message.reply_text(f"🎯 Target set to **{target} questions/day**!")
+        await update.message.reply_text(f"🎯 Target set to **{target} questions/day**!")
+    except Exception as e:
+        print(f"Error setting goal: {e}")
 
 async def main():
     bot_app = Application.builder().token(BOT_TOKEN).build()
